@@ -11,7 +11,7 @@ class SLError(Exception):
     pass
 
 
-class SuperLearner(BaseEstimator, RegressorMixin):
+class SuperLearner(BaseEstimator):
     """
     Loss-based super learning
 
@@ -53,7 +53,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
     """
     
     def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='L_BFGS_B',\
-                 save_pred_cv=False):
+                 save_pred_cv=False, bound=0.00001):
         self.library=library[:]
         self.K=K
         self.loss=loss
@@ -61,6 +61,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         self.coef_method=coef_method
         self.n_estimators=len(library)
         self.save_pred_cv=save_pred_cv
+        self.bound=bound
     
     def fit(self, X, y):
         """
@@ -80,8 +81,6 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         """
         
         n=len(y)
-        
-    
         folds = cv.KFold(n, self.K)
 
         y_pred_cv = np.empty(shape=(n, self.n_estimators))
@@ -92,7 +91,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
                 est=clone(self.library[aa])
                 est.fit(X_train,y_train)
         
-                y_pred_cv[test_index, aa]=_get_pred(est, X_test, self.loss)
+                y_pred_cv[test_index, aa]=self._get_pred(est, X_test)
     
         self.coef=self._get_coefs(y, y_pred_cv)
 
@@ -102,8 +101,8 @@ class SuperLearner(BaseEstimator, RegressorMixin):
             
         self.risk_cv=[]
         for aa in range(self.n_estimators):
-            self.risk_cv.append(metrics.mean_square_error(y, y_pred_cv[:,aa]))
-        self.risk_cv.append(metrics.mean_square_error(y, np.dot(y_pred_cv, self.coef)))
+            self.risk_cv.append(self._get_risk(y, y_pred_cv[:,aa]))
+        self.risk_cv.append(self._get_risk(y, self._get_combination(y_pred_cv, self.coef)))
 
         if self.save_pred_cv:
             self.y_pred_cv=y_pred_cv
@@ -132,8 +131,8 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         n_X = X.shape[0]
         y_pred_all = np.empty((n_X,self.n_estimators))
         for aa in range(self.n_estimators):
-            y_pred_all[:,aa]=_get_pred(self.fitted_library[aa], X, self.loss)
-        y_pred=np.dot(y_pred_all, self.coef)
+            y_pred_all[:,aa]=self._get_pred(self.fitted_library[aa], X)
+        y_pred=self._get_combination(y_pred_all, self.coef)
         return y_pred
 
 
@@ -148,38 +147,84 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         print self.risk_cv[:-1]
         print "Coefficients:", self.coef
         print "Estimated risk for SL:", self.risk_cv[-1]
+
+    def _get_combination(self, y_pred_mat, coef):
+        """
+        Calculate weighted combination of predictions
+        """
+        if self.loss=='L2':
+            comb=np.dot(y_pred_mat, coef)
+        elif self.loss=='nloglik':
+            comb=_inv_logit(np.dot(_logit(_trim(y_pred_mat, self.bound)), coef))
+        return comb
+
+    def _get_risk(self, y, y_pred):
+        if self.loss=='L2':
+            risk=np.mean((y-y_pred)**2)
+        elif self.loss=='nloglik':
+            risk=-np.mean( y   *   np.log(_trim(y_pred, self.bound))+\
+                         (1-y)*np.log(1-(_trim(y_pred, self.bound))) )
+        return risk
+        
+        
+        
     
     def _get_coefs(self, y, y_pred_cv):
         if self.coef_method is 'L_BFGS_B':
             def ff(x):
-                return sum((y-np.dot(y_pred_cv, x))**2)
-            x0=np.array([1/self.n_estimators]*self.n_estimators)
+                return self._get_risk(y, self._get_combination(y_pred_cv, x))
+            x0=np.array([1./self.n_estimators]*self.n_estimators)
             bds=[(0,1)]*self.n_estimators
             a,b,c=fmin_l_bfgs_b(ff, x0, bounds=bds, approx_grad=True)
             coef=a/sum(a)
         elif self.coef_method is 'NNLS':
+            if self.loss=='nloglik':
+                raise SLError("coef_method 'NNLS' is only for 'L2' loss")
             init_coef, rnorm=nnls(y_pred_cv, y)
             coef=init_coef/sum(init_coef)        
         else: raise ValueError("method not recognized")
-        return coef   
-    
-def _get_pred(est, X, loss):
-    if loss == 'L2':
-        pred=est.predict(X)
-    if loss == 'nloglik':
-        if hasattr(est, "predict_proba"):
-            #There should be a better way to do this
-            if est.__class__.__name__ == "SVC":
-                pred=est.predict_proba(X)[:, 0]
-            else:
-                pred=est.predict_proba(X)
-        else:
+        return coef
+
+    def _get_pred(self, est, X):
+        """
+        Get prediction from the estimator.
+        Use est.predict if loss is L2.
+        If loss is nloglik, use est.predict_proba if possible
+        otherwise just est.predict, which hopefully returns something
+        like a predicted probability, and not a class prediction.
+        """
+        if self.loss == 'L2':
             pred=est.predict(X)
-            if pred.min() < 0 or pred.max() > 1:
-                raise SLError("Probability less than zero or greater than one")
-    return pred
-                    
-        
+        if self.loss == 'nloglik':
+            if hasattr(est, "predict_proba"):
+                #There should be a better way to do this
+                #for SVM classifier
+                if est.__class__.__name__ == "SVC":
+                    pred=est.predict_proba(X)[:, 0]
+
+                #for logistic regression
+                elif est.__class__.__name__ == "LogisticRegression":
+                    pred=est.predict_proba(X)[:, 1]
+                else:
+                    pred=est.predict_proba(X)
+            else:
+                pred=est.predict(X)
+                if pred.min() < 0 or pred.max() > 1:
+                    raise SLError("Probability less than zero or greater than one")
+        return pred
+
+def _trim(p, bound):
+    p[p<bound]=bound
+    p[p>1-bound]=1-bound
+    return p
+
+def _logit(p):
+    return np.log(p/(1-p))
+
+def _inv_logit(x):
+    return 1/(1+np.exp(-x))
+    
+    
         
     
 
@@ -198,7 +243,7 @@ def cv_superlearner(library, X, y, K):
         for aa in range(len(library)):
             est=library[aa]
             est.fit(X_train,y_train)
-            y_pred_cv[test_index, aa]=_get_pred(est, X_test, sl.loss)
+            y_pred_cv[test_index, aa]=_get_pred(est, X_test)
 
     risk_cv=[]        
     for aa in range(len(library)):
