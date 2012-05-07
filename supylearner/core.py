@@ -36,6 +36,10 @@ class SuperLearner(BaseEstimator, RegressorMixin):
     coef : Coefficients corresponding to the best weighted combination
            of candidate estimators in the libarary. 
 
+    risk_cv : List of cross-validated risk estimates for each candidate
+              estimator, and the (not cross-validated) estimated risk for
+              the SuperLearner
+
     Examples
     --------
 
@@ -122,6 +126,12 @@ class SuperLearner(BaseEstimator, RegressorMixin):
 
 
     def summarize(self):
+        """
+        Print CV risk estimates for each candidate estimator in the library,
+        coefficients for weighted combination of estimators,
+        and estimated risk for the SuperLearner.
+        """
+        
         print "Cross-validated risk estimates for each estimator in the library:"
         print self.risk_cv[:-1]
         print "Coefficients:", self.coef
