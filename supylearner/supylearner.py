@@ -155,7 +155,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         
     
 
-def CVSuperLearner(library, X, y, K):
+def cv_superlearner(library, X, y, K):
     sl=SuperLearner(library)
     library=library+[sl]
     
