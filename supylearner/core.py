@@ -52,13 +52,15 @@ class SuperLearner(BaseEstimator, RegressorMixin):
 
     """
     
-    def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='L_BFGS_B'):
+    def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='L_BFGS_B',\
+                 save_pred_cv=False):
         self.library=library[:]
         self.K=K
         self.loss=loss
         self.discrete=discrete
         self.coef_method=coef_method
         self.n_estimators=len(library)
+        self.save_pred_cv=save_pred_cv
     
     def fit(self, X, y):
         """
@@ -102,6 +104,9 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         for aa in range(self.n_estimators):
             self.risk_cv.append(metrics.mean_square_error(y, y_pred_cv[:,aa]))
         self.risk_cv.append(metrics.mean_square_error(y, np.dot(y_pred_cv, self.coef)))
+
+        if self.save_pred_cv:
+            self.y_pred_cv=y_pred_cv
 
         return self
                         
@@ -163,22 +168,17 @@ def _get_pred(est, X, loss):
         pred=est.predict(X)
     if loss == 'nloglik':
         if hasattr(est, "predict_proba"):
-            pred=est.predict_proba(X)
+            #There should be a better way to do this
+            if est.__class__.__name__ == "SVC":
+                pred=est.predict_proba(X)[:, 0]
+            else:
+                pred=est.predict_proba(X)
         else:
-            pred=est.predict()
+            pred=est.predict(X)
             if pred.min() < 0 or pred.max() > 1:
                 raise SLError("Probability less than zero or greater than one")
     return pred
                     
-# def clone(estimator, safe=True):
-#     try:
-#         r=sklearn.clone(estimator, safe)
-#     except AssertionError as e:
-#         if e[0][0].split()[-1] is 'library':
-#             r=sklearn.clone(estimator, False)
-#         else:
-#             raise AssertionError(e)
-#     return r
         
         
     
