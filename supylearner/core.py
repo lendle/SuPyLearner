@@ -4,6 +4,13 @@ import sklearn.cross_validation as cv
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b, nnls
 
+class SLError(Exception):
+    """
+    Base class for errors in the SupyLearner package
+    """
+    pass
+
+
 class SuperLearner(BaseEstimator, RegressorMixin):
     """
     Loss-based super learning
@@ -83,7 +90,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
                 est=clone(self.library[aa])
                 est.fit(X_train,y_train)
         
-                y_pred_cv[test_index, aa]=est.predict(X_test)    
+                y_pred_cv[test_index, aa]=_get_pred(est, X_test, self.loss)
     
         self.coef=self._get_coefs(y, y_pred_cv)
 
@@ -120,7 +127,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         n_X = X.shape[0]
         y_pred_all = np.empty((n_X,self.n_estimators))
         for aa in range(self.n_estimators):
-            y_pred_all[:,aa]=self.fitted_library[aa].predict(X)
+            y_pred_all[:,aa]=_get_pred(self.fitted_library[aa], X, self.loss)
         y_pred=np.dot(y_pred_all, self.coef)
         return y_pred
 
@@ -151,7 +158,18 @@ class SuperLearner(BaseEstimator, RegressorMixin):
         else: raise ValueError("method not recognized")
         return coef   
     
-    
+def _get_pred(est, X, loss):
+    if loss == 'L2':
+        pred=est.predict(X)
+    if loss == 'nloglik':
+        if hasattr(est, "predict_proba"):
+            pred=est.predict_proba(X)
+        else:
+            pred=est.predict()
+            if pred.min() < 0 or pred.max() > 1:
+                raise SLError("Probability less than zero or greater than one")
+    return pred
+                    
 # def clone(estimator, safe=True):
 #     try:
 #         r=sklearn.clone(estimator, safe)
@@ -168,6 +186,7 @@ class SuperLearner(BaseEstimator, RegressorMixin):
 def cv_superlearner(library, X, y, K):
     sl=SuperLearner(library)
     library=library+[sl]
+
     
     n=len(y)
     folds=cv.KFold(n, K)
@@ -179,11 +198,13 @@ def cv_superlearner(library, X, y, K):
         for aa in range(len(library)):
             est=library[aa]
             est.fit(X_train,y_train)
-            y_pred_cv[test_index, aa]=est.predict(X_test)
+            y_pred_cv[test_index, aa]=_get_pred(est, X_test, sl.loss)
 
     risk_cv=[]        
     for aa in range(len(library)):
         risk_cv.append(metrics.mean_square_error(y, y_pred_cv[:,aa]))
     
     print risk_cv
+    
+
     
