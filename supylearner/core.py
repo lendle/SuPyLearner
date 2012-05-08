@@ -2,7 +2,7 @@ from sklearn import clone, metrics
 from sklearn.base import BaseEstimator, RegressorMixin
 import sklearn.cross_validation as cv
 import numpy as np
-from scipy.optimize import fmin_l_bfgs_b, nnls
+from scipy.optimize import fmin_l_bfgs_b, nnls, fmin_slsqp
 
 class SLError(Exception):
     """
@@ -33,7 +33,7 @@ class SuperLearner(BaseEstimator):
                weighted combination of esitmators in the library.
 
     coef_method : Method for estimating weights for weighted combination
-                  of estimators in the library. 'L_BFGS_B' or 'NNLS'.
+                  of estimators in the library. 'L_BFGS_B', 'NNLS', or 'SLSQP'.
 
     Attributes
     ----------
@@ -52,7 +52,7 @@ class SuperLearner(BaseEstimator):
 
     """
     
-    def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='L_BFGS_B',\
+    def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='SLSQP',\
                  save_pred_cv=False, bound=0.00001):
         self.library=library[:]
         self.K=K
@@ -166,23 +166,42 @@ class SuperLearner(BaseEstimator):
                          (1-y)*np.log(1-(_trim(y_pred, self.bound))) )
         return risk
         
-        
-        
-    
     def _get_coefs(self, y, y_pred_cv):
         if self.coef_method is 'L_BFGS_B':
+            if self.loss=='nloglik':
+                raise SLError("coef_method 'L_BFGS_B' is only for 'L2' loss")            
             def ff(x):
                 return self._get_risk(y, self._get_combination(y_pred_cv, x))
             x0=np.array([1./self.n_estimators]*self.n_estimators)
             bds=[(0,1)]*self.n_estimators
-            a,b,c=fmin_l_bfgs_b(ff, x0, bounds=bds, approx_grad=True)
-            coef=a/sum(a)
+            coef_init,b,c=fmin_l_bfgs_b(ff, x0, bounds=bds, approx_grad=True)
+            if c['warnflag'] is not 0:
+                raise SLError("fmin_l_bfgs_b failed when trying to calculate coefficients")
+            
         elif self.coef_method is 'NNLS':
             if self.loss=='nloglik':
                 raise SLError("coef_method 'NNLS' is only for 'L2' loss")
-            init_coef, rnorm=nnls(y_pred_cv, y)
-            coef=init_coef/sum(init_coef)        
+            coef_init, b=nnls(y_pred_cv, y)
+
+        elif self.coef_method is 'SLSQP':
+            def ff(x):
+                return self._get_risk(y, self._get_combination(y_pred_cv, x))
+            def constr(x):
+                return np.array([ np.sum(x)-1 ])
+            x0=np.array([1./self.n_estimators]*self.n_estimators)
+            bds=[(0,1)]*self.n_estimators
+            coef_init, b, c, d, e = fmin_slsqp(ff, x0, f_eqcons=constr, bounds=bds, disp=0, full_output=1)
+            if d is not 0:
+                raise SLError("fmin_slsqp failed when trying to calculate coefficients")
+
         else: raise ValueError("method not recognized")
+        coef_init = np.array(coef_init)
+        #All coefficients should be non-negative or possibly a very small negative number,
+        #But setting small values to zero makes them nicer to look at and doesn't really change anything
+        coef_init[coef_init < np.sqrt(np.finfo(np.double).eps)] = 0
+        #Coefficients should already sum to (almost) one if method is 'SLSQP', and should be really close
+        #for the other methods if loss is 'L2' anyway.
+        coef = coef_init/np.sum(coef_init)
         return coef
 
     def _get_pred(self, est, X):
@@ -228,14 +247,13 @@ def _inv_logit(x):
         
     
 
-def cv_superlearner(library, X, y, K):
-    sl=SuperLearner(library)
-    library=library+[sl]
+def cv_superlearner(sl, X, y, K):
+    library = sl.library[:]
 
-    
     n=len(y)
     folds=cv.KFold(n, K)
-    y_pred_cv = np.empty(shape=(n, len(library)))
+    y_pred_cv = np.empty(shape=(n, len(library)+1))
+    
 
     for train_index, test_index in folds:
         X_train, X_test=X[train_index], X[test_index]
@@ -243,13 +261,21 @@ def cv_superlearner(library, X, y, K):
         for aa in range(len(library)):
             est=library[aa]
             est.fit(X_train,y_train)
-            y_pred_cv[test_index, aa]=_get_pred(est, X_test)
+            y_pred_cv[test_index, aa]=sl._get_pred(est, X_test)
+        sl.fit(X_train, y_train)
+        y_pred_cv[test_index, len(library)]=sl.predixt(X_test)
 
-    risk_cv=[]        
-    for aa in range(len(library)):
-        risk_cv.append(metrics.mean_square_error(y, y_pred_cv[:,aa]))
-    
+    risk_cv=np.empty(shape=(len(library)+1, 1))
+    for aa in range(len(library)+1):
+        #List for risk for each fold for estimator aa
+        risks=[]
+        for train_index, test_index in folds:
+            risks.append(sl._get_risk(y[test_index], y_pred_cv[test_index, aa]))
+        #Take mean across volds
+        risk_cv[aa]= np.mean(risks)
+
     print risk_cv
+    return risk_cv
     
 
     
