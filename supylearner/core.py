@@ -50,6 +50,31 @@ class SuperLearner(BaseEstimator):
     Examples
     --------
 
+    from supylearner import *
+    from sklearn import datasets, svm, linear_model, neighbors, svm
+    import numpy as np
+
+    #Generate a dataset.
+    np.random.seed(100)
+    X, y=datasets.make_friedman1(1000)
+
+    ols=linear_model.LinearRegression()
+    elnet=linear_model.ElasticNetCV(rho=.1)
+    ridge=linear_model.RidgeCV()
+    lars=linear_model.LarsCV()
+    lasso=linear_model.LassoCV()
+    nn=neighbors.KNeighborsRegressor()
+    svm1=svm.SVR(scale_C=True) 
+    svm2=svm.SVR(kernel='poly', scale_C=True)
+    lib=[ols, elnet, ridge,lars, lasso, nn, svm1, svm2]
+    libnames=["OLS", "ElasticNet", "Ridge", "LARS", "LASSO", "kNN", "SVM rbf", "SVM poly"]
+
+    sl=SuperLearner(lib, libnames, loss="L2")
+
+    sl.fit(X, y)
+
+    sl.summarize()
+
     """
     
     def __init__(self, library, libnames=None, K=5, loss='L2', discrete=False, coef_method='SLSQP',\
@@ -142,6 +167,17 @@ class SuperLearner(BaseEstimator):
         Print CV risk estimates for each candidate estimator in the library,
         coefficients for weighted combination of estimators,
         and estimated risk for the SuperLearner.
+
+        Parameters
+        ----------
+
+        None
+
+        Returns
+        -------
+
+        Nothing
+        
         """
         if self.libnames is None:
             libnames=[est.__class__.__name__ for est in self.library]
@@ -153,9 +189,28 @@ class SuperLearner(BaseEstimator):
         print np.column_stack((libnames,self.coef))
         print "\n(Not cross-valided) estimated risk for SL:", self.risk_cv[-1]
 
+        
+
     def _get_combination(self, y_pred_mat, coef):
         """
         Calculate weighted combination of predictions
+
+        Parameters
+        ----------
+
+        y_pred_mat: numpy.array of shape [X.shape[0], len(self.library)]
+                    where each column is a vector of predictions from each candidate
+                    estimator
+
+        coef: numpy.array of length len(self.library), to be used to combine
+              columns of y_pred_mat
+
+        Returns
+        _______
+
+        comb: numpy.array of length X.shape[0] of predictions.
+        
+        
         """
         if self.loss=='L2':
             comb=np.dot(y_pred_mat, coef)
@@ -164,6 +219,20 @@ class SuperLearner(BaseEstimator):
         return comb
 
     def _get_risk(self, y, y_pred):
+        """
+        Calculate risk given observed y and predictions
+
+        Parameters
+        ----------
+        y: numpy array of observed outcomes
+
+        y_pred: numpy array of predicted outcomes of the same length
+
+        Returns
+        -------
+        risk: estimated risk of y and predictions.
+        
+        """
         if self.loss=='L2':
             risk=np.mean((y-y_pred)**2)
         elif self.loss=='nloglik':
@@ -172,6 +241,23 @@ class SuperLearner(BaseEstimator):
         return risk
         
     def _get_coefs(self, y, y_pred_cv):
+        """
+        Find coefficients that minimize the estimated risk.
+
+        Parameters
+        ----------
+        y: numpy.array of observed oucomes
+
+        y_pred_cv: numpy.array of shape [len(y), len(self.library)] of cross-validated
+                   predictions
+
+        Returns
+        _______
+        coef: numpy.array of normalized non-negative coefficents to combine
+              candidate estimators
+              
+        
+        """
         if self.coef_method is 'L_BFGS_B':
             if self.loss=='nloglik':
                 raise SLError("coef_method 'L_BFGS_B' is only for 'L2' loss")            
@@ -238,21 +324,84 @@ class SuperLearner(BaseEstimator):
         return pred
 
 def _trim(p, bound):
+    """
+    Trim a probabilty to be in (bound, 1-bound)
+
+    Parameters
+    ----------
+    p: numpy.array of numbers (generally between 0 and 1)
+
+    bound: small positive number <.5 to trim probabilities to
+
+    Returns
+    -------
+    Trimmed p
+    """
     p[p<bound]=bound
     p[p>1-bound]=1-bound
     return p
 
 def _logit(p):
+    """
+    Calculate the logit of a probability
+    
+    Paramters
+    ---------
+    p: numpy.array of numbers between 0 and 1
+
+    Returns
+    -------
+    logit(p)
+    """
     return np.log(p/(1-p))
 
 def _inv_logit(x):
+    """
+    Calculate the inverse logit
+
+    Paramters
+    ---------
+    x: numpy.array of real numbers
+
+    Returns
+    -------
+    iverse logit(x)
+
+    """
+    
     return 1/(1+np.exp(-x))
     
     
         
     
 
-def cv_superlearner(sl, X, y, K):
+def cv_superlearner(sl, X, y, K=5):
+    """
+    Cross validate the SuperLearner sl as well as all candidates in
+    sl.library and print results.
+
+    Parameters
+    ----------
+
+    sl: An object of type SuperLearner
+
+    X : numpy array of shape [n_samples,n_features]
+        or other object acceptable to the fit() methods
+        of all candidates in the library        
+        Training data
+        
+    y : numpy array of shape [n_samples]
+        Target values
+
+    K : Number of folds for cross-validating sl and candidate estimators.  More yeilds better result
+        because training sets are closer in size to the full data-set, but more takes longer.
+    
+    Returns
+    -------
+
+    risks_cv: numpy array of shape [len(sl.library)] 
+
+    """
     library = sl.library[:]
 
     n=len(y)
@@ -282,7 +431,7 @@ def cv_superlearner(sl, X, y, K):
     if sl.libnames is None:
         libnames=[est.__class__.__name__ for est in sl.library]
     else:
-        libnames=sl.libnames
+        libnames=sl.libnames[:]
     libnames.append("SuperLearner")
 
     print "Cross-validated risk estimates for each estimator in the library and SuperLearner:"
