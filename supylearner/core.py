@@ -52,9 +52,10 @@ class SuperLearner(BaseEstimator):
 
     """
     
-    def __init__(self, library, K=5, loss='L2', discrete=False, coef_method='SLSQP',\
+    def __init__(self, library, libnames=None, K=5, loss='L2', discrete=False, coef_method='SLSQP',\
                  save_pred_cv=False, bound=0.00001):
         self.library=library[:]
+        self.libnames=libnames
         self.K=K
         self.loss=loss
         self.discrete=discrete
@@ -142,11 +143,15 @@ class SuperLearner(BaseEstimator):
         coefficients for weighted combination of estimators,
         and estimated risk for the SuperLearner.
         """
-        
+        if self.libnames is None:
+            libnames=[est.__class__.__name__ for est in self.library]
+        else:
+            libnames=self.libnames
         print "Cross-validated risk estimates for each estimator in the library:"
-        print self.risk_cv[:-1]
-        print "Coefficients:", self.coef
-        print "Estimated risk for SL:", self.risk_cv[-1]
+        print np.column_stack((libnames, self.risk_cv[:-1]))
+        print "\nCoefficients:"
+        print np.column_stack((libnames,self.coef))
+        print "\n(Not cross-valided) estimated risk for SL:", self.risk_cv[-1]
 
     def _get_combination(self, y_pred_mat, coef):
         """
@@ -257,13 +262,13 @@ def cv_superlearner(sl, X, y, K):
 
     for train_index, test_index in folds:
         X_train, X_test=X[train_index], X[test_index]
-        y_train, y_test=y[train_index], y[test_index] 
+        y_train, y_test=y[train_index], y[test_index]
         for aa in range(len(library)):
             est=library[aa]
             est.fit(X_train,y_train)
             y_pred_cv[test_index, aa]=sl._get_pred(est, X_test)
         sl.fit(X_train, y_train)
-        y_pred_cv[test_index, len(library)]=sl.predixt(X_test)
+        y_pred_cv[test_index, len(library)]=sl.predict(X_test)
 
     risk_cv=np.empty(shape=(len(library)+1, 1))
     for aa in range(len(library)+1):
@@ -274,7 +279,14 @@ def cv_superlearner(sl, X, y, K):
         #Take mean across volds
         risk_cv[aa]= np.mean(risks)
 
-    print risk_cv
+    if sl.libnames is None:
+        libnames=[est.__class__.__name__ for est in sl.library]
+    else:
+        libnames=sl.libnames
+    libnames.append("SuperLearner")
+
+    print "Cross-validated risk estimates for each estimator in the library and SuperLearner:"
+    print np.column_stack((libnames, risk_cv))
     return risk_cv
     
 
